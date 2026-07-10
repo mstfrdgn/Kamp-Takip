@@ -37,16 +37,28 @@ input[type="date"]::-webkit-calendar-picker-indicator{cursor:pointer;}
 .scrollbar-thin::-webkit-scrollbar-thumb{background:${T.line};border-radius:8px;}
 `;
 
-const TOTAL_DAYS = 10;
+const TOTAL_DAYS = 7;
 
 /* ---------------------------------------------------------
    YARDIMCILAR
 --------------------------------------------------------- */
 const keyOf = (s) => (s || "").trim().toLowerCase().replace(/\s+/g, " ");
+const weightOf = (c) => {
+  const w = Number(c?.weight);
+  return Number.isFinite(w) && w > 0 ? w : 1;
+};
 const titleCase = (s) =>
   (s || "").trim().replace(/\s+/g, " ").split(" ")
     .map((w) => (w ? w[0].toLocaleUpperCase("tr") + w.slice(1).toLocaleLowerCase("tr") : w))
     .join(" ");
+
+async function hashPassword(pass) {
+  const data = new TextEncoder().encode(pass);
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
 
 async function loadJSON(key, fallback) {
   try {
@@ -292,7 +304,7 @@ export default function App() {
             <div className="flex items-center gap-2 mb-1">
               <Sparkles size={18} style={{ color: T.amber }} />
               <span className="f-mono text-[11px] tracking-widest" style={{ color: T.inkSoft }}>
-                10 GÜNLÜK PROGRAM
+                7 GÜNLÜK PROGRAM
               </span>
             </div>
             <h1 className="f-display text-3xl sm:text-4xl" style={{ color: T.ink }}>
@@ -431,15 +443,13 @@ function Landing({ entryMode, setEntryMode, people, setPeople, setCurrentUser, s
     }
     setBusy(true);
     const k = keyOf(full);
-    const exists = people.participants.some((p) => p.key === k);
-    const updated = exists
-      ? people
-      : { ...people, participants: [...people.participants, { key: k, display: full }] };
-    if (!exists) {
-      setPeople(updated);
-      await saveJSON("people", updated);
+    const found = people.participants.find((p) => p.key === k);
+    if (!found) {
+      setErrorMsg("İsminiz listede yok, lütfen bir organizatörle iletişime geçin.");
+      setBusy(false);
+      return;
     }
-    setCurrentUser({ type: "participant", name: full, key: k });
+    setCurrentUser({ type: "participant", name: found.display, key: found.key });
     setView("participant");
     setBusy(false);
   };
@@ -456,9 +466,10 @@ function Landing({ entryMode, setEntryMode, people, setPeople, setCurrentUser, s
     }
     setBusy(true);
     const full = titleCase(orgName);
+    const hashed = await hashPassword(orgPass);
     const updated = {
       ...people,
-      organizers: [...people.organizers, { key: keyOf(full), display: full, password: orgPass }],
+      organizers: [...people.organizers, { key: keyOf(full), display: full, password: hashed }],
     };
     setPeople(updated);
     await saveJSON("people", updated);
@@ -471,7 +482,8 @@ function Landing({ entryMode, setEntryMode, people, setPeople, setCurrentUser, s
     setErrorMsg("");
     const k = keyOf(orgName);
     const found = people.organizers.find((o) => o.key === k);
-    if (!found || found.password !== orgPass) {
+    const hashed = await hashPassword(orgPass);
+    if (!found || found.password !== hashed) {
       setErrorMsg("Ad veya şifre hatalı.");
       return;
     }
@@ -692,16 +704,18 @@ function EmptyState({ text }) {
 --------------------------------------------------------- */
 function PuanTablosuOrganizer({ people, setPeople, scoring, setScoring }) {
   const [newCriteria, setNewCriteria] = useState("");
+  const [newWeight, setNewWeight] = useState("1");
   const [newParticipant, setNewParticipant] = useState("");
   const [search, setSearch] = useState("");
 
   const addCriteria = async () => {
     if (!newCriteria.trim()) return;
-    const c = { id: Date.now().toString(), name: newCriteria.trim() };
+    const c = { id: Date.now().toString(), name: newCriteria.trim(), weight: weightOf({ weight: newWeight }) };
     const updated = { ...scoring, criteria: [...scoring.criteria, c] };
     setScoring(updated);
     await saveJSON("scoring", updated);
     setNewCriteria("");
+    setNewWeight("1");
   };
 
   const removeCriteria = async (id) => {
@@ -722,6 +736,12 @@ function PuanTablosuOrganizer({ people, setPeople, scoring, setScoring }) {
     setPeople(updated);
     await saveJSON("people", updated);
     setNewParticipant("");
+  };
+
+  const removeParticipant = async (key) => {
+    const updated = { ...people, participants: people.participants.filter((p) => p.key !== key) };
+    setPeople(updated);
+    await saveJSON("people", updated);
   };
 
   const setScore = async (pKey, cId, value) => {
@@ -762,7 +782,7 @@ function PuanTablosuOrganizer({ people, setPeople, scoring, setScoring }) {
               className="flex items-center gap-1.5 f-body text-sm px-3 py-1.5 rounded-full"
               style={{ background: T.tealSoft, color: T.tealDeep }}
             >
-              {c.name}
+              {c.name} <span className="f-mono text-xs" style={{ color: T.inkSoft }}>(x{weightOf(c)})</span>
               <button onClick={() => removeCriteria(c.id)}>
                 <Trash2 size={13} />
               </button>
@@ -775,6 +795,16 @@ function PuanTablosuOrganizer({ people, setPeople, scoring, setScoring }) {
             value={newCriteria}
             onChange={(e) => setNewCriteria(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && addCriteria()}
+          />
+          <TextInput
+            type="number"
+            step="0.1"
+            title="Ağırlık / çarpan"
+            placeholder="Ağırlık"
+            value={newWeight}
+            onChange={(e) => setNewWeight(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && addCriteria()}
+            className="w-24"
           />
           <Button onClick={addCriteria}><Plus size={15} /> Ekle</Button>
         </div>
@@ -821,9 +851,10 @@ function PuanTablosuOrganizer({ people, setPeople, scoring, setScoring }) {
                   <th className="text-left px-3 py-2.5 sticky left-0" style={{ background: T.paperDeep, color: T.ink }}>
                     Katılımcı
                   </th>
+                  <th className="px-2 py-2.5"></th>
                   {scoring.criteria.map((c) => (
                     <th key={c.id} className="text-center px-3 py-2.5 f-mono text-xs" style={{ color: T.inkSoft }}>
-                      {c.name}
+                      {c.name} (x{weightOf(c)})
                     </th>
                   ))}
                   <th className="text-center px-3 py-2.5 f-mono text-xs" style={{ color: T.teal }}>Toplam</th>
@@ -832,11 +863,16 @@ function PuanTablosuOrganizer({ people, setPeople, scoring, setScoring }) {
               <tbody>
                 {filteredParticipants.map((p, idx) => {
                   const rowScores = scoring.scores[p.key] || {};
-                  const total = scoring.criteria.reduce((sum, c) => sum + (Number(rowScores[c.id]) || 0), 0);
+                  const total = scoring.criteria.reduce((sum, c) => sum + (Number(rowScores[c.id]) || 0) * weightOf(c), 0);
                   return (
                     <tr key={p.key} style={{ borderTop: `1px solid ${T.line}`, background: idx % 2 ? T.paper : T.card }}>
                       <td className="px-3 py-2 sticky left-0 font-medium" style={{ background: idx % 2 ? T.paper : T.card, color: T.ink }}>
                         {p.display}
+                      </td>
+                      <td className="px-2 py-2 text-center">
+                        <button onClick={() => removeParticipant(p.key)} style={{ color: T.inkSoft }} title="Katılımcıyı sil">
+                          <Trash2 size={14} />
+                        </button>
                       </td>
                       {scoring.criteria.map((c) => (
                         <td key={c.id} className="px-2 py-1.5 text-center">
@@ -867,7 +903,7 @@ function PuanTablosuOrganizer({ people, setPeople, scoring, setScoring }) {
 --------------------------------------------------------- */
 function PuanlarimKatilimci({ currentUser, scoring }) {
   const rowScores = scoring.scores[currentUser.key] || {};
-  const total = scoring.criteria.reduce((sum, c) => sum + (Number(rowScores[c.id]) || 0), 0);
+  const total = scoring.criteria.reduce((sum, c) => sum + (Number(rowScores[c.id]) || 0) * weightOf(c), 0);
 
   if (scoring.criteria.length === 0) {
     return <EmptyState text="Organizatörler henüz puanlama kriteri belirlemedi." />;
@@ -882,7 +918,9 @@ function PuanlarimKatilimci({ currentUser, scoring }) {
       <div className="divide-y" style={{ borderColor: T.line }}>
         {scoring.criteria.map((c) => (
           <div key={c.id} className="flex items-center justify-between py-3">
-            <span className="f-body text-sm" style={{ color: T.ink }}>{c.name}</span>
+            <span className="f-body text-sm" style={{ color: T.ink }}>
+              {c.name} <span className="f-mono text-xs" style={{ color: T.inkSoft }}>(x{weightOf(c)})</span>
+            </span>
             <span className="f-mono text-base font-semibold" style={{ color: T.tealDeep }}>
               {rowScores[c.id] !== undefined ? rowScores[c.id] : "—"}
             </span>
@@ -1038,7 +1076,8 @@ function OrganizatorYonetimi({ currentUser, people, setPeople }) {
       setErr("Bu isimde bir organizatör zaten var.");
       return;
     }
-    const updated = { ...people, organizers: [...people.organizers, { key: k, display: full, password: pass }] };
+    const hashed = await hashPassword(pass);
+    const updated = { ...people, organizers: [...people.organizers, { key: k, display: full, password: hashed }] };
     setPeople(updated);
     await saveJSON("people", updated);
     setName("");
