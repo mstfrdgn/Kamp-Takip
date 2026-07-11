@@ -205,10 +205,11 @@ function Card({ children, className = "" }) {
 }
 
 function TextInput(props) {
+  const hasCustomWidth = /(^|\s)w-\S/.test(props.className || "");
   return (
     <input
       {...props}
-      className={`f-body w-full px-3 py-2 rounded-lg border outline-none transition-shadow focus:shadow-[0_0_0_3px_rgba(14,107,88,0.15)] ${props.className || ""}`}
+      className={`f-body ${hasCustomWidth ? "" : "w-full"} px-3 py-2 rounded-lg border outline-none transition-shadow focus:shadow-[0_0_0_3px_rgba(14,107,88,0.15)] ${props.className || ""}`}
       style={{ borderColor: T.line, background: T.paper, color: T.ink, ...(props.style || {}) }}
     />
   );
