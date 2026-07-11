@@ -1,8 +1,8 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 import {
   Megaphone, Trophy, CalendarDays, LogOut, Plus, Trash2, Lock,
-  User, Users, Search, ChevronRight, RefreshCw, Pencil, AlertCircle,
-  ShieldCheck, Sparkles, Check
+  User, Users, Search, ChevronRight, RefreshCw, AlertCircle,
+  ShieldCheck, Sparkles, Store, Clock, Minus, Coins, Wallet
 } from "lucide-react";
 import { doc, getDoc, setDoc, onSnapshot } from "firebase/firestore";
 import { db } from "./firebase";
@@ -43,6 +43,8 @@ const TOTAL_DAYS = 7;
    YARDIMCILAR
 --------------------------------------------------------- */
 const keyOf = (s) => (s || "").trim().toLowerCase().replace(/\s+/g, " ");
+const participantKeyOf = (name, surname, city) =>
+  `${keyOf(`${name} ${surname}`)}::${keyOf(city)}`;
 const weightOf = (c) => {
   const w = Number(c?.weight);
   return Number.isFinite(w) && w > 0 ? w : 1;
@@ -51,6 +53,27 @@ const titleCase = (s) =>
   (s || "").trim().replace(/\s+/g, " ").split(" ")
     .map((w) => (w ? w[0].toLocaleUpperCase("tr") + w.slice(1).toLocaleLowerCase("tr") : w))
     .join(" ");
+
+function dayEarned(scoring, pKey, day) {
+  const dayScores = (scoring.scores?.[pKey] || {})[day] || {};
+  return (scoring.criteria || []).reduce(
+    (sum, c) => sum + (Number(dayScores[c.id]) || 0) * weightOf(c),
+    0
+  );
+}
+function totalEarned(scoring, pKey) {
+  let sum = 0;
+  for (let d = 1; d <= TOTAL_DAYS; d++) sum += dayEarned(scoring, pKey, d);
+  return sum;
+}
+function totalSpent(market, pKey) {
+  return (market.purchases || [])
+    .filter((t) => t.participantKey === pKey)
+    .reduce((s, t) => s + (Number(t.amount) || 0), 0);
+}
+function balanceOf(scoring, market, pKey) {
+  return totalEarned(scoring, pKey) - totalSpent(market, pKey);
+}
 
 async function hashPassword(pass) {
   const data = new TextEncoder().encode(pass);
@@ -218,8 +241,9 @@ export default function App() {
   const [ready, setReady] = useState(false);
   const [people, setPeople] = useState({ organizers: [], participants: [] });
   const [announcements, setAnnouncements] = useState([]);
-  const [program, setProgram] = useState({ startDate: "", days: [] });
+  const [program, setProgram] = useState({ startDate: "", schedule: {} });
   const [scoring, setScoring] = useState({ criteria: [], scores: {} });
+  const [market, setMarket] = useState({ products: [], purchases: [] });
 
   const [view, setView] = useState("landing"); // landing | participant | organizer
   const [entryMode, setEntryMode] = useState(null); // 'participant' | 'organizer' | null
@@ -230,20 +254,22 @@ export default function App() {
   const [refreshing, setRefreshing] = useState(false);
 
   const loadAll = useCallback(async () => {
-    const [p, a, prog, sc] = await Promise.all([
+    const [p, a, prog, sc, mk] = await Promise.all([
       loadJSON("people", { organizers: [], participants: [] }),
       loadJSON("announcements", []),
-      loadJSON("program", { startDate: "", days: [] }),
+      loadJSON("program", { startDate: "", schedule: {} }),
       loadJSON("scoring", { criteria: [], scores: {} }),
+      loadJSON("market", { products: [], purchases: [] }),
     ]);
     setPeople(p);
     setAnnouncements(a);
     setProgram(prog);
     setScoring(sc);
+    setMarket(mk);
   }, []);
 
   useEffect(() => {
-    const loadedFlags = { people: false, announcements: false, program: false, scoring: false };
+    const loadedFlags = { people: false, announcements: false, program: false, scoring: false, market: false };
     const markLoaded = (k) => {
       loadedFlags[k] = true;
       if (Object.values(loadedFlags).every(Boolean)) setReady(true);
@@ -258,13 +284,17 @@ export default function App() {
         setAnnouncements(v);
         markLoaded("announcements");
       }),
-      subscribeJSON("program", { startDate: "", days: [] }, (v) => {
+      subscribeJSON("program", { startDate: "", schedule: {} }, (v) => {
         setProgram(v);
         markLoaded("program");
       }),
       subscribeJSON("scoring", { criteria: [], scores: {} }, (v) => {
         setScoring(v);
         markLoaded("scoring");
+      }),
+      subscribeJSON("market", { products: [], purchases: [] }, (v) => {
+        setMarket(v);
+        markLoaded("market");
       }),
     ];
 
@@ -304,11 +334,11 @@ export default function App() {
             <div className="flex items-center gap-2 mb-1">
               <Sparkles size={18} style={{ color: T.amber }} />
               <span className="f-mono text-[11px] tracking-widest" style={{ color: T.inkSoft }}>
-                7 GÜNLÜK PROGRAM
+                YAZ KAMPI
               </span>
             </div>
             <h1 className="f-display text-3xl sm:text-4xl" style={{ color: T.ink }}>
-              Atölye Panosu
+              Program Panosu
             </h1>
           </div>
           <div className="w-full sm:w-64">
@@ -370,13 +400,14 @@ export default function App() {
 
             <nav className="flex flex-wrap gap-1 mb-5 p-1 rounded-2xl" style={{ background: T.paperDeep }}>
               <TabButton active={tab === "duyurular"} onClick={() => setTab("duyurular")} icon={Megaphone} label="Duyurular" />
+              <TabButton active={tab === "program"} onClick={() => setTab("program")} icon={CalendarDays} label="Program" />
               <TabButton
                 active={tab === "puanlar"}
                 onClick={() => setTab("puanlar")}
                 icon={Trophy}
-                label={currentUser.type === "organizer" ? "Puan Tablosu" : "Puanlarım"}
+                label={currentUser.type === "organizer" ? "Puanlar" : "Puanlarım"}
               />
-              <TabButton active={tab === "program"} onClick={() => setTab("program")} icon={CalendarDays} label="Program" />
+              <TabButton active={tab === "nurbakkal"} onClick={() => setTab("nurbakkal")} icon={Store} label="Nur Bakkal" />
               {currentUser.type === "organizer" && (
                 <TabButton active={tab === "organizatorler"} onClick={() => setTab("organizatorler")} icon={Users} label="Organizatörler" />
               )}
@@ -395,16 +426,26 @@ export default function App() {
                 setPeople={setPeople}
                 scoring={scoring}
                 setScoring={setScoring}
+                market={market}
               />
             )}
             {tab === "puanlar" && currentUser.type === "participant" && (
-              <PuanlarimKatilimci currentUser={currentUser} scoring={scoring} />
+              <PuanlarimKatilimci currentUser={currentUser} scoring={scoring} market={market} />
             )}
             {tab === "program" && (
               <ProgramSekmesi
                 currentUser={currentUser}
                 program={program}
                 setProgram={setProgram}
+              />
+            )}
+            {tab === "nurbakkal" && (
+              <NurBakkal
+                currentUser={currentUser}
+                people={people}
+                market={market}
+                setMarket={setMarket}
+                scoring={scoring}
               />
             )}
             {tab === "organizatorler" && currentUser.type === "organizer" && (
@@ -427,6 +468,7 @@ export default function App() {
 function Landing({ entryMode, setEntryMode, people, setPeople, setCurrentUser, setView, errorMsg, setErrorMsg }) {
   const [name, setName] = useState("");
   const [surname, setSurname] = useState("");
+  const [city, setCity] = useState("");
   const [orgName, setOrgName] = useState("");
   const [orgPass, setOrgPass] = useState("");
   const [orgPassConfirm, setOrgPassConfirm] = useState("");
@@ -436,16 +478,15 @@ function Landing({ entryMode, setEntryMode, people, setPeople, setCurrentUser, s
 
   const enterAsParticipant = async () => {
     setErrorMsg("");
-    const full = titleCase(`${name} ${surname}`);
-    if (!name.trim() || !surname.trim()) {
-      setErrorMsg("Lütfen ad ve soyad gir.");
+    if (!name.trim() || !surname.trim() || !city.trim()) {
+      setErrorMsg("Lütfen ad, soyad ve şehir gir.");
       return;
     }
     setBusy(true);
-    const k = keyOf(full);
+    const k = participantKeyOf(name, surname, city);
     const found = people.participants.find((p) => p.key === k);
     if (!found) {
-      setErrorMsg("İsminiz listede yok, lütfen bir organizatörle iletişime geçin.");
+      setErrorMsg("Bilgileriniz listede yok, lütfen bir organizatörle iletişime geçin.");
       setBusy(false);
       return;
     }
@@ -546,6 +587,12 @@ function Landing({ entryMode, setEntryMode, people, setPeople, setCurrentUser, s
             <div className="space-y-3">
               <TextInput placeholder="Adın" value={name} onChange={(e) => setName(e.target.value)} />
               <TextInput placeholder="Soyadın" value={surname} onChange={(e) => setSurname(e.target.value)} />
+              <TextInput
+                placeholder="Şehir"
+                value={city}
+                onChange={(e) => setCity(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && enterAsParticipant()}
+              />
               {errorMsg && <ErrorText msg={errorMsg} />}
               <Button variant="amber" className="w-full" onClick={enterAsParticipant} disabled={busy}>
                 Giriş yap
@@ -702,11 +749,15 @@ function EmptyState({ text }) {
 /* ---------------------------------------------------------
    PUAN TABLOSU — ORGANİZATÖR
 --------------------------------------------------------- */
-function PuanTablosuOrganizer({ people, setPeople, scoring, setScoring }) {
+function PuanTablosuOrganizer({ people, setPeople, scoring, setScoring, market }) {
   const [newCriteria, setNewCriteria] = useState("");
   const [newWeight, setNewWeight] = useState("1");
-  const [newParticipant, setNewParticipant] = useState("");
+  const [newName, setNewName] = useState("");
+  const [newSurname, setNewSurname] = useState("");
+  const [newCity, setNewCity] = useState("");
+  const [addErr, setAddErr] = useState("");
   const [search, setSearch] = useState("");
+  const [day, setDay] = useState(1);
 
   const addCriteria = async () => {
     if (!newCriteria.trim()) return;
@@ -725,17 +776,24 @@ function PuanTablosuOrganizer({ people, setPeople, scoring, setScoring }) {
   };
 
   const addParticipant = async () => {
-    if (!newParticipant.trim()) return;
-    const full = titleCase(newParticipant);
-    const k = keyOf(full);
-    if (people.participants.some((p) => p.key === k)) {
-      setNewParticipant("");
+    setAddErr("");
+    if (!newName.trim() || !newSurname.trim() || !newCity.trim()) {
+      setAddErr("Ad, soyad ve şehir gerekli.");
       return;
     }
-    const updated = { ...people, participants: [...people.participants, { key: k, display: full }] };
+    const display = titleCase(`${newName} ${newSurname}`);
+    const city = titleCase(newCity);
+    const k = participantKeyOf(newName, newSurname, newCity);
+    if (people.participants.some((p) => p.key === k)) {
+      setAddErr("Bu kişi (ad, soyad ve şehir ile) zaten ekli.");
+      return;
+    }
+    const updated = { ...people, participants: [...people.participants, { key: k, display, city }] };
     setPeople(updated);
     await saveJSON("people", updated);
-    setNewParticipant("");
+    setNewName("");
+    setNewSurname("");
+    setNewCity("");
   };
 
   const removeParticipant = async (key) => {
@@ -744,14 +802,15 @@ function PuanTablosuOrganizer({ people, setPeople, scoring, setScoring }) {
     await saveJSON("people", updated);
   };
 
-  const setScore = async (pKey, cId, value) => {
+  const setScore = async (pKey, d, cId, value) => {
     const num = value === "" ? undefined : Number(value);
     const nextScores = { ...scoring.scores };
     nextScores[pKey] = { ...(nextScores[pKey] || {}) };
+    nextScores[pKey][d] = { ...(nextScores[pKey][d] || {}) };
     if (num === undefined || Number.isNaN(num)) {
-      delete nextScores[pKey][cId];
+      delete nextScores[pKey][d][cId];
     } else {
-      nextScores[pKey][cId] = num;
+      nextScores[pKey][d][cId] = num;
     }
     const updated = { ...scoring, scores: nextScores };
     setScoring(updated);
@@ -761,7 +820,7 @@ function PuanTablosuOrganizer({ people, setPeople, scoring, setScoring }) {
   const filteredParticipants = useMemo(() => {
     const q = keyOf(search);
     return people.participants
-      .filter((p) => !q || p.key.includes(q))
+      .filter((p) => !q || keyOf(`${p.display} ${p.city || ""}`).includes(q))
       .sort((a, b) => a.display.localeCompare(b.display, "tr"));
   }, [people.participants, search]);
 
@@ -829,14 +888,50 @@ function PuanTablosuOrganizer({ people, setPeople, scoring, setScoring }) {
           </div>
         </div>
 
-        <div className="flex gap-2 mb-4">
+        <div className="flex flex-col sm:flex-row gap-2 mb-2">
           <TextInput
-            placeholder="Katılımcı ekle (Ad Soyad)"
-            value={newParticipant}
-            onChange={(e) => setNewParticipant(e.target.value)}
+            placeholder="Ad"
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && addParticipant()}
           />
-          <Button variant="ghost" onClick={addParticipant}><Plus size={15} /> Katılımcı ekle</Button>
+          <TextInput
+            placeholder="Soyad"
+            value={newSurname}
+            onChange={(e) => setNewSurname(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && addParticipant()}
+          />
+          <TextInput
+            placeholder="Şehir"
+            value={newCity}
+            onChange={(e) => setNewCity(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && addParticipant()}
+          />
+          <Button variant="ghost" onClick={addParticipant} className="shrink-0"><Plus size={15} /> Katılımcı ekle</Button>
+        </div>
+        <div className="mb-4">{addErr && <ErrorText msg={addErr} />}</div>
+
+        <div className="flex items-center gap-2 mb-4">
+          <span className="f-body text-sm" style={{ color: T.ink }}>Gün:</span>
+          <div className="flex gap-1 flex-wrap">
+            {Array.from({ length: TOTAL_DAYS }).map((_, i) => {
+              const d = i + 1;
+              const active = day === d;
+              return (
+                <button
+                  key={d}
+                  onClick={() => setDay(d)}
+                  className="f-mono text-xs w-8 h-8 rounded-lg transition-colors"
+                  style={{
+                    background: active ? T.tealDeep : T.paperDeep,
+                    color: active ? "#fff" : T.inkSoft,
+                  }}
+                >
+                  {d}
+                </button>
+              );
+            })}
+          </div>
         </div>
 
         {scoring.criteria.length === 0 ? (
@@ -857,17 +952,22 @@ function PuanTablosuOrganizer({ people, setPeople, scoring, setScoring }) {
                       {c.name} (x{weightOf(c)})
                     </th>
                   ))}
-                  <th className="text-center px-3 py-2.5 f-mono text-xs" style={{ color: T.teal }}>Toplam</th>
+                  <th className="text-center px-3 py-2.5 f-mono text-xs" style={{ color: T.amber }}>{day}. gün</th>
+                  <th className="text-center px-3 py-2.5 f-mono text-xs" style={{ color: T.teal }}>Bakiye</th>
                 </tr>
               </thead>
               <tbody>
                 {filteredParticipants.map((p, idx) => {
-                  const rowScores = scoring.scores[p.key] || {};
-                  const total = scoring.criteria.reduce((sum, c) => sum + (Number(rowScores[c.id]) || 0) * weightOf(c), 0);
+                  const rowScores = (scoring.scores[p.key] || {})[day] || {};
+                  const dayTotal = dayEarned(scoring, p.key, day);
+                  const balance = balanceOf(scoring, market, p.key);
                   return (
                     <tr key={p.key} style={{ borderTop: `1px solid ${T.line}`, background: idx % 2 ? T.paper : T.card }}>
                       <td className="px-3 py-2 sticky left-0 font-medium" style={{ background: idx % 2 ? T.paper : T.card, color: T.ink }}>
                         {p.display}
+                        {p.city && (
+                          <span className="f-mono text-xs ml-1.5" style={{ color: T.inkSoft }}>· {p.city}</span>
+                        )}
                       </td>
                       <td className="px-2 py-2 text-center">
                         <button onClick={() => removeParticipant(p.key)} style={{ color: T.inkSoft }} title="Katılımcıyı sil">
@@ -877,15 +977,17 @@ function PuanTablosuOrganizer({ people, setPeople, scoring, setScoring }) {
                       {scoring.criteria.map((c) => (
                         <td key={c.id} className="px-2 py-1.5 text-center">
                           <input
+                            key={`${p.key}-${day}-${c.id}`}
                             type="number"
                             defaultValue={rowScores[c.id] ?? ""}
-                            onBlur={(e) => setScore(p.key, c.id, e.target.value)}
+                            onBlur={(e) => setScore(p.key, day, c.id, e.target.value)}
                             className="f-mono w-16 text-center px-1 py-1 rounded-md border outline-none focus:shadow-[0_0_0_3px_rgba(14,107,88,0.15)]"
                             style={{ borderColor: T.line, background: T.paper, color: T.ink }}
                           />
                         </td>
                       ))}
-                      <td className="text-center f-mono font-semibold" style={{ color: T.teal }}>{total}</td>
+                      <td className="text-center f-mono font-semibold" style={{ color: T.amber }}>{dayTotal}</td>
+                      <td className="text-center f-mono font-semibold" style={{ color: T.teal }}>{balance}</td>
                     </tr>
                   );
                 })}
@@ -901,37 +1003,65 @@ function PuanTablosuOrganizer({ people, setPeople, scoring, setScoring }) {
 /* ---------------------------------------------------------
    PUANLARIM — KATILIMCI
 --------------------------------------------------------- */
-function PuanlarimKatilimci({ currentUser, scoring }) {
-  const rowScores = scoring.scores[currentUser.key] || {};
-  const total = scoring.criteria.reduce((sum, c) => sum + (Number(rowScores[c.id]) || 0) * weightOf(c), 0);
-
-  if (scoring.criteria.length === 0) {
-    return <EmptyState text="Organizatörler henüz puanlama kriteri belirlemedi." />;
-  }
+function PuanlarimKatilimci({ currentUser, scoring, market }) {
+  const balance = balanceOf(scoring, market, currentUser.key);
+  const days = Array.from({ length: TOTAL_DAYS }, (_, i) => i + 1).map((d) => ({
+    day: d,
+    earned: dayEarned(scoring, currentUser.key, d),
+  }));
+  const myPurchases = (market.purchases || [])
+    .filter((t) => t.participantKey === currentUser.key)
+    .sort((a, b) => b.ts - a.ts);
 
   return (
-    <Card>
-      <div className="flex items-center gap-2 mb-4">
-        <Trophy size={17} style={{ color: T.amber }} />
-        <h3 className="f-display text-lg" style={{ color: T.ink }}>Puanların yalnızca sana özeldir</h3>
-      </div>
-      <div className="divide-y" style={{ borderColor: T.line }}>
-        {scoring.criteria.map((c) => (
-          <div key={c.id} className="flex items-center justify-between py-3">
-            <span className="f-body text-sm" style={{ color: T.ink }}>
-              {c.name} <span className="f-mono text-xs" style={{ color: T.inkSoft }}>(x{weightOf(c)})</span>
-            </span>
-            <span className="f-mono text-base font-semibold" style={{ color: T.tealDeep }}>
-              {rowScores[c.id] !== undefined ? rowScores[c.id] : "—"}
-            </span>
+    <div className="space-y-4">
+      <Card>
+        <div className="flex items-center gap-2 mb-2">
+          <Wallet size={17} style={{ color: T.amber }} />
+          <h3 className="f-display text-lg" style={{ color: T.ink }}>Güncel bakiyen</h3>
+        </div>
+        <div className="f-mono text-3xl font-bold" style={{ color: T.tealDeep }}>{balance}</div>
+      </Card>
+
+      {scoring.criteria.length === 0 ? (
+        <EmptyState text="Organizatörler henüz puanlama kriteri belirlemedi." />
+      ) : (
+        <Card>
+          <div className="flex items-center gap-2 mb-4">
+            <Trophy size={17} style={{ color: T.amber }} />
+            <h3 className="f-display text-lg" style={{ color: T.ink }}>Günlere göre kazanılan puan</h3>
           </div>
-        ))}
-      </div>
-      <div className="flex items-center justify-between mt-4 pt-4" style={{ borderTop: `2px solid ${T.line}` }}>
-        <span className="f-display text-lg" style={{ color: T.ink }}>Toplam</span>
-        <span className="f-mono text-xl font-bold" style={{ color: T.amber }}>{total}</span>
-      </div>
-    </Card>
+          <div className="divide-y" style={{ borderColor: T.line }}>
+            {days.map(({ day, earned }) => (
+              <div key={day} className="flex items-center justify-between py-2.5">
+                <span className="f-body text-sm" style={{ color: T.ink }}>{day}. gün</span>
+                <span className="f-mono text-sm font-semibold" style={{ color: T.teal }}>{earned}</span>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {myPurchases.length > 0 && (
+        <Card>
+          <div className="flex items-center gap-2 mb-3">
+            <Store size={17} style={{ color: T.teal }} />
+            <h3 className="f-display text-lg" style={{ color: T.ink }}>Nur Bakkal alışverişlerin</h3>
+          </div>
+          <div className="divide-y" style={{ borderColor: T.line }}>
+            {myPurchases.map((t) => (
+              <div key={t.id} className="flex items-center justify-between py-2.5">
+                <div>
+                  <div className="f-body text-sm" style={{ color: T.ink }}>{t.note || "—"}</div>
+                  <div className="f-mono text-[11px]" style={{ color: T.inkSoft }}>{fmtDate(t.ts)}</div>
+                </div>
+                <span className="f-mono text-sm font-semibold" style={{ color: T.red }}>-{t.amount}</span>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+    </div>
   );
 }
 
@@ -940,7 +1070,6 @@ function PuanlarimKatilimci({ currentUser, scoring }) {
 --------------------------------------------------------- */
 function ProgramSekmesi({ currentUser, program, setProgram }) {
   const isOrganizer = currentUser.type === "organizer";
-  const [editingId, setEditingId] = useState(null);
 
   const setStartDate = async (val) => {
     const updated = { ...program, startDate: val };
@@ -948,32 +1077,32 @@ function ProgramSekmesi({ currentUser, program, setProgram }) {
     await saveJSON("program", updated);
   };
 
-  const addDay = async () => {
-    const day = { id: Date.now().toString(), title: `${program.days.length + 1}. Gün`, desc: "" };
-    const updated = { ...program, days: [...program.days, day] };
-    setProgram(updated);
-    await saveJSON("program", updated);
-    setEditingId(day.id);
+  const rowsOf = (day) => (program.schedule && program.schedule[day]) || [];
+
+  const persistSchedule = async (schedule) => {
+    await saveJSON("program", { ...program, schedule });
   };
 
-  const updateDay = async (id, patch) => {
-    const updated = { ...program, days: program.days.map((d) => (d.id === id ? { ...d, ...patch } : d)) };
-    setProgram(updated);
+  const addRow = async (day) => {
+    const row = { id: Date.now().toString(), saat: "", icerik: "" };
+    const schedule = { ...(program.schedule || {}) };
+    schedule[day] = [...(schedule[day] || []), row];
+    setProgram({ ...program, schedule });
+    await persistSchedule(schedule);
   };
 
-  const persistDays = async (days) => {
-    await saveJSON("program", { ...program, days });
+  const removeRow = async (day, rowId) => {
+    const schedule = { ...(program.schedule || {}) };
+    schedule[day] = (schedule[day] || []).filter((r) => r.id !== rowId);
+    setProgram({ ...program, schedule });
+    await persistSchedule(schedule);
   };
 
-  const saveDay = async (id) => {
-    setEditingId(null);
-    await persistDays(program.days);
-  };
-
-  const removeDay = async (id) => {
-    const updated = { ...program, days: program.days.filter((d) => d.id !== id) };
-    setProgram(updated);
-    await saveJSON("program", updated);
+  const updateRowField = async (day, rowId, field, value) => {
+    const schedule = { ...(program.schedule || {}) };
+    schedule[day] = (schedule[day] || []).map((r) => (r.id === rowId ? { ...r, [field]: value } : r));
+    setProgram({ ...program, schedule });
+    await persistSchedule(schedule);
   };
 
   return (
@@ -994,64 +1123,329 @@ function ProgramSekmesi({ currentUser, program, setProgram }) {
         </Card>
       )}
 
-      {program.days.length === 0 && <EmptyState text="Program içeriği henüz eklenmedi." />}
-
       <div className="space-y-3">
-        {program.days.map((d, i) => (
-          <Card key={d.id}>
-            {editingId === d.id ? (
-              <div className="space-y-2">
-                <TextInput
-                  value={d.title}
-                  onChange={(e) => updateDay(d.id, { title: e.target.value })}
-                  placeholder="Gün başlığı"
-                />
-                <textarea
-                  value={d.desc}
-                  onChange={(e) => updateDay(d.id, { desc: e.target.value })}
-                  rows={3}
-                  placeholder="O güne dair içerik / etkinlikler…"
-                  className="f-body w-full px-3 py-2 rounded-lg border outline-none resize-none"
-                  style={{ borderColor: T.line, background: T.paper, color: T.ink }}
-                />
-                <div className="flex justify-end gap-2">
-                  <Button variant="ghost" onClick={() => setEditingId(null)}>Vazgeç</Button>
-                  <Button onClick={() => saveDay(d.id)}><Check size={15} /> Kaydet</Button>
-                </div>
-              </div>
-            ) : (
-              <div className="flex items-start justify-between gap-3">
-                <div className="flex gap-3">
+        {Array.from({ length: TOTAL_DAYS }).map((_, i) => {
+          const day = i + 1;
+          const rows = [...rowsOf(day)].sort((a, b) => {
+            if (!a.saat) return 1;
+            if (!b.saat) return -1;
+            return a.saat.localeCompare(b.saat);
+          });
+          return (
+            <Card key={day}>
+              <div className="flex items-center justify-between gap-3 mb-3">
+                <div className="flex items-center gap-3">
                   <span
-                    className="f-mono text-xs px-2 py-1 rounded-lg h-fit"
+                    className="f-mono text-xs px-2 py-1 rounded-lg"
                     style={{ background: T.tealSoft, color: T.tealDeep }}
                   >
-                    {String(i + 1).padStart(2, "0")}
+                    {String(day).padStart(2, "0")}
                   </span>
-                  <div>
-                    <h4 className="f-display text-lg" style={{ color: T.ink }}>{d.title}</h4>
-                    {d.desc && (
-                      <p className="f-body text-sm mt-1 whitespace-pre-wrap" style={{ color: T.inkSoft }}>{d.desc}</p>
-                    )}
-                  </div>
+                  <h4 className="f-display text-lg" style={{ color: T.ink }}>{day}. Gün</h4>
                 </div>
                 {isOrganizer && (
-                  <div className="flex gap-2 shrink-0">
-                    <button onClick={() => setEditingId(d.id)} style={{ color: T.inkSoft }}><Pencil size={15} /></button>
-                    <button onClick={() => removeDay(d.id)} style={{ color: T.inkSoft }}><Trash2 size={15} /></button>
-                  </div>
+                  <Button variant="ghost" onClick={() => addRow(day)}>
+                    <Plus size={14} /> Satır ekle
+                  </Button>
                 )}
               </div>
-            )}
-          </Card>
-        ))}
-      </div>
 
-      {isOrganizer && (
-        <Button variant="ghost" onClick={addDay} className="w-full sm:w-auto">
-          <Plus size={15} /> Gün ekle
-        </Button>
-      )}
+              {rows.length === 0 ? (
+                <EmptyState text="Bu güne henüz program eklenmedi." />
+              ) : isOrganizer ? (
+                <div className="space-y-2">
+                  {rows.map((r) => (
+                    <div key={r.id} className="flex items-center gap-2">
+                      <TextInput
+                        defaultValue={r.saat}
+                        placeholder="Saat"
+                        onBlur={(e) => updateRowField(day, r.id, "saat", e.target.value)}
+                        className="w-24 f-mono shrink-0"
+                      />
+                      <TextInput
+                        defaultValue={r.icerik}
+                        placeholder="İçerik"
+                        onBlur={(e) => updateRowField(day, r.id, "icerik", e.target.value)}
+                        className="flex-1"
+                      />
+                      <button onClick={() => removeRow(day, r.id)} style={{ color: T.inkSoft }} title="Satırı sil">
+                        <Trash2 size={15} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="divide-y" style={{ borderColor: T.line }}>
+                  {rows.map((r) => (
+                    <div key={r.id} className="flex items-start gap-3 py-2.5">
+                      <span className="f-mono text-sm shrink-0 w-16 flex items-center gap-1" style={{ color: T.teal }}>
+                        <Clock size={13} /> {r.saat || "—"}
+                      </span>
+                      <span className="f-body text-sm" style={{ color: T.ink }}>{r.icerik}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Card>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------
+   NUR BAKKAL
+--------------------------------------------------------- */
+function NurBakkal({ currentUser, people, market, setMarket, scoring }) {
+  if (currentUser.type === "organizer") {
+    return <NurBakkalOrganizer people={people} market={market} setMarket={setMarket} />;
+  }
+  return <NurBakkalKatilimci currentUser={currentUser} market={market} scoring={scoring} />;
+}
+
+function NurBakkalOrganizer({ people, market, setMarket }) {
+  const [newProductName, setNewProductName] = useState("");
+  const [newProductPrice, setNewProductPrice] = useState("");
+  const [search, setSearch] = useState("");
+  const [selectedKey, setSelectedKey] = useState("");
+  const [amount, setAmount] = useState("");
+  const [note, setNote] = useState("");
+  const [err, setErr] = useState("");
+
+  const persistMarket = async (updated) => {
+    setMarket(updated);
+    await saveJSON("market", updated);
+  };
+
+  const addProduct = async () => {
+    if (!newProductName.trim() || newProductPrice === "") return;
+    const product = { id: Date.now().toString(), name: newProductName.trim(), price: Number(newProductPrice) || 0 };
+    await persistMarket({ ...market, products: [...market.products, product] });
+    setNewProductName("");
+    setNewProductPrice("");
+  };
+
+  const updateProductField = async (id, field, value) => {
+    const products = market.products.map((p) =>
+      p.id === id ? { ...p, [field]: field === "price" ? Number(value) || 0 : value } : p
+    );
+    await persistMarket({ ...market, products });
+  };
+
+  const removeProduct = async (id) => {
+    await persistMarket({ ...market, products: market.products.filter((p) => p.id !== id) });
+  };
+
+  const filteredParticipants = useMemo(() => {
+    const q = keyOf(search);
+    return people.participants
+      .filter((p) => !q || keyOf(`${p.display} ${p.city || ""}`).includes(q))
+      .sort((a, b) => a.display.localeCompare(b.display, "tr"));
+  }, [people.participants, search]);
+
+  const selectedParticipant = people.participants.find((p) => p.key === selectedKey);
+
+  const submitPurchase = async () => {
+    setErr("");
+    if (!selectedKey) {
+      setErr("Lütfen bir katılımcı seç.");
+      return;
+    }
+    const num = Number(amount);
+    if (!amount || Number.isNaN(num) || num <= 0) {
+      setErr("Geçerli bir puan miktarı gir.");
+      return;
+    }
+    const entry = {
+      id: Date.now().toString(),
+      participantKey: selectedKey,
+      amount: num,
+      note: note.trim(),
+      ts: Date.now(),
+    };
+    await persistMarket({ ...market, purchases: [entry, ...market.purchases] });
+    setSelectedKey("");
+    setSearch("");
+    setAmount("");
+    setNote("");
+  };
+
+  const removePurchase = async (id) => {
+    await persistMarket({ ...market, purchases: market.purchases.filter((t) => t.id !== id) });
+  };
+
+  const participantName = (key) => {
+    const p = people.participants.find((pp) => pp.key === key);
+    return p ? `${p.display}${p.city ? ` · ${p.city}` : ""}` : "Bilinmeyen katılımcı";
+  };
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <div className="flex items-center gap-2 mb-3">
+          <Store size={17} style={{ color: T.teal }} />
+          <h3 className="f-display text-lg" style={{ color: T.ink }}>Ürün kataloğu</h3>
+        </div>
+        <div className="space-y-2 mb-3">
+          {market.products.length === 0 && (
+            <span className="f-body text-sm" style={{ color: T.inkSoft }}>Henüz ürün eklenmedi.</span>
+          )}
+          {market.products.map((p) => (
+            <div key={p.id} className="flex items-center gap-2">
+              <TextInput
+                defaultValue={p.name}
+                placeholder="Ürün adı"
+                onBlur={(e) => updateProductField(p.id, "name", e.target.value)}
+                className="flex-1"
+              />
+              <TextInput
+                type="number"
+                defaultValue={p.price}
+                placeholder="Puan"
+                onBlur={(e) => updateProductField(p.id, "price", e.target.value)}
+                className="w-24 f-mono"
+              />
+              <button onClick={() => removeProduct(p.id)} style={{ color: T.inkSoft }} title="Ürünü sil">
+                <Trash2 size={15} />
+              </button>
+            </div>
+          ))}
+        </div>
+        <div className="flex gap-2">
+          <TextInput
+            placeholder="Yeni ürün adı"
+            value={newProductName}
+            onChange={(e) => setNewProductName(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && addProduct()}
+          />
+          <TextInput
+            type="number"
+            placeholder="Puan"
+            value={newProductPrice}
+            onChange={(e) => setNewProductPrice(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && addProduct()}
+            className="w-24"
+          />
+          <Button onClick={addProduct}><Plus size={15} /> Ekle</Button>
+        </div>
+      </Card>
+
+      <Card>
+        <div className="flex items-center gap-2 mb-3">
+          <Coins size={17} style={{ color: T.amber }} />
+          <h3 className="f-display text-lg" style={{ color: T.ink }}>Puan düş (satın alma)</h3>
+        </div>
+        <div className="space-y-2">
+          <div className="relative">
+            <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2" style={{ color: T.inkSoft }} />
+            <TextInput
+              placeholder="Katılımcı ara…"
+              value={search}
+              onChange={(e) => { setSearch(e.target.value); setSelectedKey(""); }}
+              className="pl-8"
+            />
+          </div>
+          {search && !selectedKey && (
+            <div className="rounded-lg overflow-hidden scrollbar-thin max-h-40 overflow-y-auto" style={{ border: `1px solid ${T.line}` }}>
+              {filteredParticipants.length === 0 ? (
+                <div className="f-body text-sm px-3 py-2" style={{ color: T.inkSoft }}>Katılımcı bulunamadı.</div>
+              ) : (
+                filteredParticipants.map((p) => (
+                  <button
+                    key={p.key}
+                    onClick={() => { setSelectedKey(p.key); setSearch(`${p.display}${p.city ? ` · ${p.city}` : ""}`); }}
+                    className="w-full text-left f-body text-sm px-3 py-2 block"
+                    style={{ color: T.ink }}
+                  >
+                    {p.display} {p.city && <span className="f-mono text-xs" style={{ color: T.inkSoft }}>· {p.city}</span>}
+                  </button>
+                ))
+              )}
+            </div>
+          )}
+          {selectedParticipant && (
+            <Pill tone="teal">
+              {selectedParticipant.display}{selectedParticipant.city ? ` · ${selectedParticipant.city}` : ""} seçildi
+            </Pill>
+          )}
+          <div className="flex gap-2">
+            <TextInput
+              type="number"
+              placeholder="Düşülecek puan"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              className="w-40 f-mono"
+            />
+            <TextInput placeholder="Not (ör. hangi ürün)" value={note} onChange={(e) => setNote(e.target.value)} className="flex-1" />
+          </div>
+          {err && <ErrorText msg={err} />}
+          <div className="flex justify-end">
+            <Button variant="amber" onClick={submitPurchase}><Minus size={15} /> Puan düş</Button>
+          </div>
+        </div>
+      </Card>
+
+      <Card>
+        <h3 className="f-display text-lg mb-3" style={{ color: T.ink }}>Son işlemler</h3>
+        {market.purchases.length === 0 ? (
+          <EmptyState text="Henüz işlem yok." />
+        ) : (
+          <div className="space-y-2">
+            {market.purchases.slice(0, 30).map((t) => (
+              <div key={t.id} className="flex items-center justify-between gap-3 py-2" style={{ borderTop: `1px solid ${T.line}` }}>
+                <div>
+                  <div className="f-body text-sm" style={{ color: T.ink }}>{participantName(t.participantKey)}</div>
+                  <div className="f-mono text-[11px]" style={{ color: T.inkSoft }}>
+                    {t.note ? `${t.note} · ` : ""}{fmtDate(t.ts)}
+                  </div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="f-mono text-sm font-semibold" style={{ color: T.red }}>-{t.amount}</span>
+                  <button onClick={() => removePurchase(t.id)} style={{ color: T.inkSoft }}>
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+function NurBakkalKatilimci({ currentUser, market, scoring }) {
+  const balance = balanceOf(scoring, market, currentUser.key);
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <div className="flex items-center gap-2 mb-2">
+          <Wallet size={17} style={{ color: T.amber }} />
+          <h3 className="f-display text-lg" style={{ color: T.ink }}>Puan bakiyen</h3>
+        </div>
+        <div className="f-mono text-3xl font-bold" style={{ color: T.tealDeep }}>{balance}</div>
+      </Card>
+
+      <Card>
+        <div className="flex items-center gap-2 mb-3">
+          <Store size={17} style={{ color: T.teal }} />
+          <h3 className="f-display text-lg" style={{ color: T.ink }}>Ürün kataloğu</h3>
+        </div>
+        {market.products.length === 0 ? (
+          <EmptyState text="Henüz ürün eklenmedi." />
+        ) : (
+          <div className="divide-y" style={{ borderColor: T.line }}>
+            {market.products.map((p) => (
+              <div key={p.id} className="flex items-center justify-between py-2.5">
+                <span className="f-body text-sm" style={{ color: T.ink }}>{p.name}</span>
+                <span className="f-mono text-sm font-semibold" style={{ color: T.teal }}>{p.price} puan</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
     </div>
   );
 }
